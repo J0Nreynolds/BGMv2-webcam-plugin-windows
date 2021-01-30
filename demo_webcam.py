@@ -24,7 +24,9 @@ from torchvision.transforms.functional import to_pil_image
 from threading import Thread, Lock
 from tqdm import tqdm
 from PIL import Image
-import pyfakewebcam # pip install pyfakewebcam
+import pyvirtualcam # pip install pyvirtualcam
+import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 # --------------- App setup ---------------
 app = {
@@ -64,7 +66,7 @@ class Camera:
         self.capture = cv2.VideoCapture(device_id)
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'));
+        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         # self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
@@ -114,6 +116,7 @@ class Displayer:
         self.show_info = show_info
         self.fps_tracker = FPSTracker()
         self.webcam = None
+        self.alpha =  255 * np.ones((self.height, self.width))
         cv2.namedWindow(self.title, cv2.WINDOW_NORMAL)
         if width is not None and height is not None:
             cv2.resizeWindow(self.title, width, height)
@@ -126,7 +129,8 @@ class Displayer:
         if self.webcam is not None:
             image_web = np.ascontiguousarray(image, dtype=np.uint8) # .copy()
             image_web = cv2.cvtColor(image_web, cv2.COLOR_RGB2BGR)
-            self.webcam.schedule_frame(image_web)
+            image_web = np.dstack((image_web, self.alpha)).astype(np.uint8)
+            self.webcam.send(image_web)
         # else:
         cv2.imshow(self.title, image)
         return cv2.waitKey(1) & 0xFF
@@ -148,7 +152,7 @@ class Controller: # A cv2 window with a couple buttons for background capture an
             {
                 "type": "button",
                 "name": "compose_switch",
-                "label": "Compose: plain white",
+                "label": "Compose: chroma green",
                 "x": 50,
                 "y": 100,
                 "w": 300,
@@ -178,7 +182,7 @@ class Controller: # A cv2 window with a couple buttons for background capture an
                 app["mode"] = "background"
                 control["label"] = "Grab background"
         elif control["name"] == "compose_switch":
-            cycle = [("plain", "Compose: plain white"), ("gaussian", "Compose: blur background"), ("video", "Compose: Winter holidays"), ("image", "Compose: Mt. Rainier")]
+            cycle = [("plain", "Compose: chroma green"), ("gaussian", "Compose: blur background"), ("video", "Compose: Winter holidays"), ("image", "Compose: Mt. Rainier")]
             current_idx = next(i for i, v in enumerate(cycle) if v[0] == app["compose_mode"])
             next_idx = (current_idx + 1) % len(cycle)
             app["compose_mode"] = cycle[next_idx][0]
@@ -243,8 +247,8 @@ width, height = args.resolution
 cam = Camera(width=width, height=height)
 dsp = Displayer('RTHRBM Preview', cam.width, cam.height, show_info=(not args.hide_fps))
 ctr = Controller()
-fake_camera = pyfakewebcam.FakeWebcam(args.camera_device, cam.width, cam.height)
-dsp.webcam = fake_camera
+virtual_camera = pyvirtualcam.Camera(width=cam.width, height=cam.height, fps=24)
+dsp.webcam = virtual_camera
 
 def cv2_frame_to_cuda(frame):
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -272,6 +276,9 @@ def app_step():
         pha, fgr = model(src, app["bgr"])[:2]
         if app["compose_mode"] == "plain":
             tgt_bgr = torch.ones_like(fgr)
+            tgt_bgr[0,0] *= 0
+            tgt_bgr[0,1] *= 177 / 255.0
+            tgt_bgr[0,2] *= 64 / 255.0
         elif app["compose_mode"] == "image":
             tgt_bgr = nn.functional.interpolate(preloaded_image, (fgr.shape[2:]))
         elif app["compose_mode"] == "video":
